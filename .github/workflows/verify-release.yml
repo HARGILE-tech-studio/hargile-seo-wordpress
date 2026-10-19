@@ -1,0 +1,98 @@
+name: Verify release
+
+# Read-only check of a published release: the zip must match its .sha256 asset
+# and the sha256 declared in info.json, and the download URL must stay inside
+# this repository's release assets. Nothing is written anywhere.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to verify (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check tag format
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Tag is not of the form vX.Y.Z"
+            exit 1
+          fi
+
+      - name: Checkout default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download release assets
+        run: |
+          mkdir -p "$RUNNER_TEMP/release"
+          gh release download "$TAG" --repo "$REPO" --dir "$RUNNER_TEMP/release" \
+            --pattern 'hargile-seo.zip' \
+            --pattern 'hargile-seo.zip.sha256' \
+            --pattern 'info.json'
+
+      - name: Verify zip against the .sha256 asset
+        working-directory: ${{ runner.temp }}/release
+        run: sha256sum -c hargile-seo.zip.sha256
+
+      - name: Verify info.json (release asset)
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          expected_prefix="https://github.com/${REPO}/releases/download/"
+          expected_url="${expected_prefix}${TAG}/hargile-seo.zip"
+          actual_sha="$(sha256sum hargile-seo.zip | cut -d' ' -f1)"
+          declared_sha="$(jq -r '.sha256 // empty' info.json)"
+          package="$(jq -r '.package // empty' info.json)"
+          version="$(jq -r '.version // empty' info.json)"
+
+          if [ -z "$declared_sha" ] || [ "$declared_sha" != "$actual_sha" ]; then
+            echo "::error::info.json sha256 is missing or does not match the zip"
+            exit 1
+          fi
+          case "$package" in
+            "$expected_prefix"*) ;;
+            *) echo "::error::info.json package URL is outside $expected_prefix"; exit 1 ;;
+          esac
+          if [ "$package" != "$expected_url" ]; then
+            echo "::error::info.json package URL is not the asset of tag $TAG"
+            exit 1
+          fi
+          if [ "$version" != "${TAG#v}" ]; then
+            echo "::error::info.json version does not match the tag"
+            exit 1
+          fi
+
+      - name: Verify info.json on the default branch (if tracked)
+        working-directory: ${{ runner.temp }}/release
+        run: |
+          branch_info="$GITHUB_WORKSPACE/info.json"
+          if [ ! -f "$branch_info" ]; then
+            echo "info.json is not tracked on the default branch, skipping"
+            exit 0
+          fi
+          # The default branch may point at a newer release than the tag being
+          # checked, so only compare when it declares the same version.
+          if [ "$(jq -r '.version // empty' "$branch_info")" != "${TAG#v}" ]; then
+            echo "Default branch info.json is for another version, skipping"
+            exit 0
+          fi
+          if ! cmp -s <(jq -S . "$branch_info") <(jq -S . info.json); then
+            echo "::error::info.json on the default branch differs from the release asset"
+            exit 1
+          fi
