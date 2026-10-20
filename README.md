@@ -70,5 +70,10 @@ préfixe de l'URL.
   l'extension.
 - Attestation de provenance de la build (`actions/attest-build-provenance`).
 
+## Historique
+
+- 1.0.1 (à publier) : première version qui vérifie le sha256 et le préfixe
+  d'URL ; les sites en 1.0.0 l'installent sans contrôle.
+
 Ce dépôt ne porte que les versions publiées. Le code source est maintenu par
 HARGILE et publié ici à chaque version.
